@@ -12,10 +12,10 @@ export interface TaskQueueConfig {
 export const DEFAULT_TASK_CONFIG: TaskQueueConfig = {
   maxConcurrentWebsiteTasks: 2, // Optimized for TinyFish 2-run concurrency tier
   maxConcurrentAgents: 2,
-  websiteTaskTimeoutMs: 45000,
+  websiteTaskTimeoutMs: 20000, // Responsive 20s timeout per attempt
   agentDeadlineMs: 180000,
   overallResearchDeadlineMs: 300000,
-  maxWebsiteRetries: 2,
+  maxWebsiteRetries: 1, // Single fast retry to prevent UI stagnation
 };
 
 // Circuit Breaker for repeatedly failing hostnames/domains

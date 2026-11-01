@@ -264,7 +264,7 @@ export class ResearchOrchestrator {
                   // If live agent browsing is active, attempt TinyFish deep navigation with graceful fallback
                   if (this.tinyfish.isConfigured()) {
                     try {
-                      const liveFinding = await this.tinyfish.browseUrl(task.url, task.goal);
+                      const liveFinding = await this.tinyfish.browseUrl(task.url, task.goal, signal);
                       return liveFinding || finding;
                     } catch (e) {
                       console.warn(`[TinyFish] browseUrl rate-limited or failed for ${task.url}, using search evidence:`, e);

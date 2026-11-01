@@ -8,7 +8,7 @@ export interface WebResearchProvider {
     agentType: AgentType,
     depth: 'quick' | 'standard' | 'deep'
   ): Promise<NormalizedWebFinding[]>;
-  browseUrl(url: string, goal: string): Promise<NormalizedWebFinding | null>;
+  browseUrl(url: string, goal: string, signal?: AbortSignal): Promise<NormalizedWebFinding | null>;
   isConfigured(): boolean;
 }
 
@@ -65,27 +65,81 @@ export class TinyFishProvider implements WebResearchProvider {
     return this.fallbackLiveWebResearch(query, agentType, depth);
   }
 
-  async browseUrl(url: string, goal: string): Promise<NormalizedWebFinding | null> {
+  async browseUrl(url: string, goal: string, signal?: AbortSignal): Promise<NormalizedWebFinding | null> {
+    let domain = 'web';
+    try {
+      domain = new URL(url).hostname;
+    } catch {
+      domain = url.slice(0, 30);
+    }
+
+    // 1. Fast direct HTML fetch first (takes 0.5-2 seconds, bypasses automation queue)
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 ProofMesh/1.0',
+          Accept: 'text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8',
+        },
+        signal: signal || AbortSignal.timeout(10000),
+      });
+
+      if (response.ok) {
+        const html = await response.text();
+        const cleanText = html
+          .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+          .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+        if (cleanText.length > 150) {
+          const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+          const pageTitle = titleMatch ? titleMatch[1].trim() : domain;
+
+          return {
+            title: pageTitle,
+            url,
+            domain,
+            snippet: cleanText.slice(0, 300),
+            fullPassages: [cleanText.slice(0, 2500)],
+            sourceType: 'web',
+          };
+        }
+      }
+    } catch {
+      // Direct fetch failed or restricted; proceed to TinyFish
+    }
+
+    // 2. High-fidelity TinyFish browser navigation with bounded 12s timeout
     if (this.client.isConfigured()) {
       try {
-        const result = await this.client.runAgentSync({
-          url,
-          goal,
-          browser_profile: 'lite',
-        });
-        const domain = new URL(url).hostname;
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('TinyFish agent run bounded timeout')), 12000)
+        );
+
+        const result = await Promise.race([
+          this.client.runAgentSync({
+            url,
+            goal,
+            browser_profile: 'lite',
+          }),
+          timeoutPromise,
+        ]);
+
         const text = result.result?.extracted_text || result.result?.markdown || '';
-        return {
-          title: domain,
-          url,
-          domain,
-          snippet: text.slice(0, 200),
-          fullPassages: [text.slice(0, 1000)],
-          sourceType: 'web',
-          rawResponse: result,
-        };
+        if (text) {
+          return {
+            title: domain,
+            url,
+            domain,
+            snippet: text.slice(0, 250),
+            fullPassages: [text.slice(0, 2000)],
+            sourceType: 'web',
+            rawResponse: result,
+          };
+        }
       } catch (err) {
-        console.error(`[TinyFishProvider] Failed to browse ${url}:`, err);
+        console.warn(`[TinyFishProvider] Browser navigation failed or timed out for ${url}:`, err instanceof Error ? err.message : err);
       }
     }
     return null;
