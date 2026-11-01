@@ -136,10 +136,10 @@ CREATE TABLE IF NOT EXISTS contradictions (
 
 -- 8. Evidence Graph Nodes
 CREATE TABLE IF NOT EXISTS evidence_nodes (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id TEXT PRIMARY KEY,
     research_id UUID NOT NULL REFERENCES research_sessions(id) ON DELETE CASCADE,
     node_type TEXT NOT NULL CHECK (node_type IN ('root_hypothesis', 'objective', 'sub_hypothesis', 'evidence', 'source', 'contradiction', 'verification')),
-    reference_id UUID,
+    reference_id TEXT,
     label TEXT NOT NULL,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     position_x NUMERIC DEFAULT 0,
@@ -149,10 +149,10 @@ CREATE TABLE IF NOT EXISTS evidence_nodes (
 
 -- 9. Evidence Graph Edges
 CREATE TABLE IF NOT EXISTS evidence_edges (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id TEXT PRIMARY KEY,
     research_id UUID NOT NULL REFERENCES research_sessions(id) ON DELETE CASCADE,
-    source_node_id UUID NOT NULL REFERENCES evidence_nodes(id) ON DELETE CASCADE,
-    target_node_id UUID NOT NULL REFERENCES evidence_nodes(id) ON DELETE CASCADE,
+    source_node_id TEXT NOT NULL,
+    target_node_id TEXT NOT NULL,
     relationship_type TEXT NOT NULL CHECK (relationship_type IN ('SUPPORTS', 'CONTRADICTS', 'DERIVED_FROM', 'REFERENCES', 'RELATED_TO', 'VERIFIES')),
     label TEXT,
     confidence NUMERIC(4, 3) DEFAULT 1.0,
@@ -192,6 +192,18 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON website_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_sources_research ON sources(research_id);
 CREATE INDEX IF NOT EXISTS idx_claims_research ON claims(research_id);
 CREATE INDEX IF NOT EXISTS idx_contradictions_research ON contradictions(research_id);
+-- Ensure text-based identifiers for graph canvas compatibility
+DO $$ 
+BEGIN
+    ALTER TABLE evidence_nodes ALTER COLUMN id TYPE TEXT;
+    ALTER TABLE evidence_nodes ALTER COLUMN reference_id TYPE TEXT;
+    ALTER TABLE evidence_edges ALTER COLUMN id TYPE TEXT;
+    ALTER TABLE evidence_edges ALTER COLUMN source_node_id TYPE TEXT;
+    ALTER TABLE evidence_edges ALTER COLUMN target_node_id TYPE TEXT;
+EXCEPTION WHEN OTHERS THEN
+    NULL;
+END $$;
+
 CREATE INDEX IF NOT EXISTS idx_nodes_research ON evidence_nodes(research_id);
 CREATE INDEX IF NOT EXISTS idx_edges_research ON evidence_edges(research_id);
 CREATE INDEX IF NOT EXISTS idx_events_research ON research_events(research_id, created_at);

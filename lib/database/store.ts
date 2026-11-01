@@ -439,30 +439,34 @@ class ResearchRepository {
   ): Promise<void> {
     const supabase = getSupabaseClient();
     if (supabase) {
-      await supabase.from('evidence_nodes').insert(
-        nodes.map((n) => ({
-          id: n.id,
-          research_id: researchId,
-          node_type: n.node_type,
-          reference_id: n.reference_id,
-          label: n.label,
-          metadata: n.metadata,
-          position_x: n.position_x,
-          position_y: n.position_y,
-        }))
-      );
-      await supabase.from('evidence_edges').insert(
-        edges.map((e) => ({
-          id: e.id,
-          research_id: researchId,
-          source_node_id: e.source_node_id,
-          target_node_id: e.target_node_id,
-          relationship_type: e.relationship_type,
-          label: e.label,
-          confidence: e.confidence,
-          metadata: e.metadata || {},
-        }))
-      );
+      try {
+        await supabase.from('evidence_nodes').insert(
+          nodes.map((n) => ({
+            id: n.id,
+            research_id: researchId,
+            node_type: n.node_type,
+            reference_id: n.reference_id,
+            label: n.label,
+            metadata: n.metadata,
+            position_x: n.position_x,
+            position_y: n.position_y,
+          }))
+        );
+        await supabase.from('evidence_edges').insert(
+          edges.map((e) => ({
+            id: e.id,
+            research_id: researchId,
+            source_node_id: e.source_node_id,
+            target_node_id: e.target_node_id,
+            relationship_type: e.relationship_type,
+            label: e.label,
+            confidence: e.confidence,
+            metadata: e.metadata || {},
+          }))
+        );
+      } catch (err) {
+        console.warn('[Repository] Supabase graph save notice (persisting locally):', err);
+      }
     }
     this.memoryData.nodes[researchId] = nodes;
     this.memoryData.edges[researchId] = edges;
@@ -472,25 +476,274 @@ class ResearchRepository {
   async getEvidenceGraph(researchId: string): Promise<FullEvidenceGraph> {
     const supabase = getSupabaseClient();
     if (supabase) {
-      const { data: nodes } = await supabase
-        .from('evidence_nodes')
-        .select('*')
-        .eq('research_id', researchId);
-      const { data: edges } = await supabase
-        .from('evidence_edges')
-        .select('*')
-        .eq('research_id', researchId);
-      if (nodes && edges) {
-        return {
-          nodes: nodes as GraphNode[],
-          edges: edges as GraphEdge[],
-        };
+      try {
+        const { data: nodes } = await supabase
+          .from('evidence_nodes')
+          .select('*')
+          .eq('research_id', researchId);
+        const { data: edges } = await supabase
+          .from('evidence_edges')
+          .select('*')
+          .eq('research_id', researchId);
+        if (nodes && nodes.length > 0) {
+          return {
+            nodes: nodes as GraphNode[],
+            edges: (edges || []) as GraphEdge[],
+          };
+        }
+      } catch {
+        // Fall through to local durable store
       }
     }
+
+    this.loadFromDisk();
+    const localNodes = this.memoryData.nodes[researchId] || [];
+    const localEdges = this.memoryData.edges[researchId] || [];
+
+    if (localNodes.length > 0) {
+      return {
+        nodes: localNodes,
+        edges: localEdges,
+      };
+    }
+
+    // Dynamic Graph Synthesis: If nodes were not pre-calculated, synthesize topology on the fly
+    const session = await this.getSession(researchId);
+    const objectives = await this.getObjectives(researchId);
+    const claims = await this.getClaims(researchId);
+    const sources = await this.getSources(researchId);
+    const contradictions = await this.getContradictions(researchId);
+
+    if (session || objectives.length > 0 || claims.length > 0) {
+      const synthesized = this.synthesizeEvidenceGraph(
+        researchId,
+        session?.query || 'Research Objective',
+        objectives,
+        claims,
+        sources,
+        contradictions
+      );
+      if (synthesized.nodes.length > 0) {
+        this.memoryData.nodes[researchId] = synthesized.nodes;
+        this.memoryData.edges[researchId] = synthesized.edges;
+        this.persistToDisk();
+        return synthesized;
+      }
+    }
+
     return {
-      nodes: this.memoryData.nodes[researchId] || [],
-      edges: this.memoryData.edges[researchId] || [],
+      nodes: [],
+      edges: [],
     };
+  }
+
+  synthesizeEvidenceGraph(
+    researchId: string,
+    query: string,
+    objectives: ResearchObjective[],
+    claims: Claim[],
+    sources: Source[],
+    contradictions: Contradiction[]
+  ): FullEvidenceGraph {
+    const nodes: GraphNode[] = [];
+    const edges: GraphEdge[] = [];
+
+    // 1. Root Hypothesis Node
+    const rootNodeId = `node-root-${researchId}`;
+    nodes.push({
+      id: rootNodeId,
+      research_id: researchId,
+      node_type: 'root_hypothesis',
+      label: query,
+      metadata: {
+        label: query,
+        nodeType: 'root_hypothesis',
+        title: 'Primary Research Objective',
+        status: 'investigated',
+      },
+      position_x: 650,
+      position_y: 40,
+    });
+
+    // 2. Objective Nodes
+    const objNodeMap = new Map<string, string>();
+    const objSpacing = 300;
+    const startX = 650 - ((objectives.length - 1) * objSpacing) / 2;
+
+    objectives.forEach((obj, idx) => {
+      const oNodeId = `node-obj-${obj.id}`;
+      objNodeMap.set(obj.id, oNodeId);
+
+      nodes.push({
+        id: oNodeId,
+        research_id: researchId,
+        node_type: 'objective',
+        reference_id: obj.id,
+        label: obj.title,
+        metadata: {
+          label: obj.title,
+          nodeType: 'objective',
+          title: obj.title,
+          specialization: obj.specialization,
+          status: obj.status,
+          explanation: obj.description,
+        },
+        position_x: startX + idx * objSpacing,
+        position_y: 240,
+      });
+
+      edges.push({
+        id: `edge-root-obj-${obj.id}`,
+        research_id: researchId,
+        source_node_id: rootNodeId,
+        target_node_id: oNodeId,
+        relationship_type: 'DERIVED_FROM',
+        label: 'DERIVED_FROM',
+      });
+    });
+
+    // 3. Claim Nodes
+    const claimNodeMap = new Map<string, string>();
+    claims.forEach((claim, idx) => {
+      const cNodeId = `node-claim-${claim.id}`;
+      claimNodeMap.set(claim.id, cNodeId);
+
+      const parentObjNode = claim.objective_id ? objNodeMap.get(claim.objective_id) : null;
+      const parentObj = nodes.find((n) => n.id === parentObjNode);
+      const posX = parentObj ? parentObj.position_x + ((idx % 2 === 0 ? -1 : 1) * 35) : 300 + (idx % 5) * 260;
+      const posY = 460 + Math.floor(idx / 5) * 160;
+
+      nodes.push({
+        id: cNodeId,
+        research_id: researchId,
+        node_type: 'evidence',
+        reference_id: claim.id,
+        label: claim.claim_text,
+        metadata: {
+          label: claim.claim_text,
+          nodeType: 'evidence',
+          claimText: claim.claim_text,
+          originalPassage: claim.original_passage,
+          stance: claim.stance,
+          confidence: claim.confidence,
+          confidenceRationale: claim.confidence_rationale,
+          sourceTitle: claim.source?.title,
+          sourceUrl: claim.source?.url,
+          sourceDomain: claim.source?.domain,
+          publicationDate: claim.source?.publication_date,
+          retrievedAt: claim.source?.retrieved_at,
+        },
+        position_x: posX,
+        position_y: posY,
+      });
+
+      if (parentObjNode) {
+        edges.push({
+          id: `edge-claim-${claim.id}`,
+          research_id: researchId,
+          source_node_id: cNodeId,
+          target_node_id: parentObjNode,
+          relationship_type: claim.stance === 'contradicts' ? 'CONTRADICTS' : 'SUPPORTS',
+          label: claim.stance === 'contradicts' ? 'CONTRADICTS' : 'SUPPORTS',
+          confidence: claim.confidence,
+        });
+      }
+    });
+
+    // 4. Source Nodes
+    const sourceNodeMap = new Map<string, string>();
+    sources.forEach((src, idx) => {
+      const sNodeId = `node-src-${src.id}`;
+      sourceNodeMap.set(src.id, sNodeId);
+
+      nodes.push({
+        id: sNodeId,
+        research_id: researchId,
+        node_type: 'source',
+        reference_id: src.id,
+        label: src.title,
+        metadata: {
+          label: src.title,
+          nodeType: 'source',
+          title: src.title,
+          sourceUrl: src.url,
+          sourceDomain: src.domain,
+          publicationDate: src.publication_date,
+          retrievedAt: src.retrieved_at,
+        },
+        position_x: 100 + (idx % 4) * 320,
+        position_y: 820 + Math.floor(idx / 4) * 130,
+      });
+    });
+
+    claims.forEach((claim) => {
+      const cNodeId = claimNodeMap.get(claim.id);
+      const sNodeId = sourceNodeMap.get(claim.source_id);
+      if (cNodeId && sNodeId) {
+        edges.push({
+          id: `edge-ref-${claim.id}`,
+          research_id: researchId,
+          source_node_id: sNodeId,
+          target_node_id: cNodeId,
+          relationship_type: 'REFERENCES',
+          label: 'REFERENCES',
+        });
+      }
+    });
+
+    // 5. Contradiction Nodes
+    contradictions.forEach((ct) => {
+      const ctNodeId = `node-ct-${ct.id}`;
+      const nodeAId = claimNodeMap.get(ct.claim_a_id);
+      const nodeBId = claimNodeMap.get(ct.claim_b_id);
+
+      const posA = nodes.find((n) => n.id === nodeAId);
+      const posB = nodes.find((n) => n.id === nodeBId);
+      const midX = posA && posB ? (posA.position_x + posB.position_x) / 2 : 650;
+      const midY = posA && posB ? (posA.position_y + posB.position_y) / 2 : 600;
+
+      nodes.push({
+        id: ctNodeId,
+        research_id: researchId,
+        node_type: 'contradiction',
+        reference_id: ct.id,
+        label: `Conflict: ${ct.contradiction_type.replace('_', ' ')}`,
+        metadata: {
+          label: `Contradiction: ${ct.contradiction_type}`,
+          nodeType: 'contradiction',
+          contradictionType: ct.contradiction_type,
+          severity: ct.severity,
+          explanation: ct.explanation,
+          claimAId: ct.claim_a_id,
+          claimBId: ct.claim_b_id,
+        },
+        position_x: midX,
+        position_y: midY + 40,
+      });
+
+      if (nodeAId) {
+        edges.push({
+          id: `edge-ct-a-${ct.id}`,
+          research_id: researchId,
+          source_node_id: ctNodeId,
+          target_node_id: nodeAId,
+          relationship_type: 'CONTRADICTS',
+          label: 'CONTRADICTS',
+        });
+      }
+      if (nodeBId) {
+        edges.push({
+          id: `edge-ct-b-${ct.id}`,
+          research_id: researchId,
+          source_node_id: ctNodeId,
+          target_node_id: nodeBId,
+          relationship_type: 'CONTRADICTS',
+          label: 'CONTRADICTS',
+        });
+      }
+    });
+
+    return { nodes, edges };
   }
 
   // --- REPORT ---

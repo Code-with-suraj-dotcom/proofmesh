@@ -81,6 +81,12 @@ export function EvidenceGraph({ initialGraph }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState(initialReactNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialReactEdges);
 
+  // Synchronize state whenever initialGraph prop changes (e.g., dynamic updates after fetch)
+  React.useEffect(() => {
+    setNodes(initialReactNodes);
+    setEdges(initialReactEdges);
+  }, [initialReactNodes, initialReactEdges, setNodes, setEdges]);
+
   // Filter & Search states
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedType, setSelectedType] = useState<string>('all');
