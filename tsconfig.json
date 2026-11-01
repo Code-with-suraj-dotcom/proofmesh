@@ -19,7 +19,14 @@
       }
     ],
     "paths": {
-      "@/*": ["./*"]
+      "@/*": ["./*"],
+      "@/ai/*": ["./lib/ai/*"],
+      "@/tinyfish/*": ["./lib/tinyfish/*"],
+      "@/research-engine/*": ["./lib/research-engine/*"],
+      "@/database/*": ["./lib/database/*"],
+      "@/observability/*": ["./lib/observability/*"],
+      "@/types/*": ["./types/*"],
+      "@/components/*": ["./components/*"]
     }
   },
   "include": [
